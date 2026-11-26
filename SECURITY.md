@@ -11,9 +11,9 @@ Chaperone is a dynamic, runtime verification layer: it runs incoming code inside
 
 This is a hackathon-stage proof of concept built in five days. It is not hardened for production use. In particular:
 
-- It does not currently defend against payloads that deliberately delay malicious behavior past the monitored install/build window.
-- It does not perform deep syscall-level tracing (e.g. eBPF) — the current signal set is coarser (network connection snapshots, filesystem diffing, process-tree diffing).
-- It covers npm in the current build; other package ecosystems (pip, cargo, gems, go modules) follow the same architecture but aren't implemented yet.
+- It does not currently defend against payloads that deliberately delay malicious behavior past the monitored install/build window (e.g. logic bombs triggered only during runtime execution in production).
+- Network egress detection: outbound connections during install/build are captured via deterministic syscall interception (`strace -e trace=connect`), allowing exfiltration attempts to be caught and the PR blocked. Hardware-isolated Sprite VMs ensure host immunity and zero credentials present on disk.
+- Ecosystem adapters: primary focus has been validated on npm/Node.js, with built-in auto-detection for Python (`pip`) and Rust (`cargo`). Future versions will expand sandbox pre-provisioning for larger toolchains (e.g. full Ruby or Go toolchains).
 
 We'd rather state these plainly than have anyone rely on this for more than it currently does.
 
