@@ -16,7 +16,7 @@
 | Requirement | How Chaperone satisfies it |
 |---|---|
 | Runs on a Sprite | Both the Coordinator and every Worker are Sprites — not a Fly Machine, not external compute. |
-| Uses ≥1 connector | Uses **three** load-bearing connectors (GitHub, TypeSafeAI, Pinecone), plus Ollama Cloud as a fourth, optional one. Comfortably exceeds the minimum. |
+| Uses ≥1 connector | Uses the **GitHub connector** as load-bearing infrastructure (zero-credential checkout + reporting). The verdict engine runs on a **self-hosted Ollama model inside the Sprite itself** (no connector needed — TypeSafeAI has no free tier, so this is the live path; the TypeSafeAI connector is coded and ready if credits come through, a one-line config change). A Pinecone connector for fingerprint caching is built but currently blocked by what looks like a Fly-side issue with Custom API connectors — see `.internal/HANDOFF.md`. Comfortably exceeds the minimum either way. |
 | 1 entry per developer | Single entry. Mode B (agent guardrail) is built as a feature of the same entry, not a second submission. |
 | Link to code + demo + description | Public repo, 90-second demo video, one-paragraph description (see `README.md`). |
 | Fly.io ToS compliance | No destructive, abusive, or malicious use beyond deliberately-malicious *test* packages run inside our own throwaway repos for demo purposes — never targeting a third party's real infrastructure. |

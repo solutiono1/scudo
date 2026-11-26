@@ -1,0 +1,10 @@
+{
+  "name": "chaperone-coordinator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chaperone Coordinator — webhook receiver and orchestrator, runs on the Coordinator Sprite.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  }
+}
