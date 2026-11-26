@@ -45,7 +45,10 @@ for (const line of straceLines) {
 const EXECVE_RE = /execve\("([^"]+)",\s*\[(.*?)\],.*?\)\s*=\s*0\s*$/;
 const EXPECTED_BUILD_TOOLS = new Set([
   'node', 'npm', 'npx', 'sh', 'bash', 'env', 'which', 'tar', 'gzip', 'uname',
-  'make', 'cc1', 'gcc', 'ld', 'python3', 'rm', 'mkdir', 'mv', 'cp', 'touch',
+  'make', 'cc1', 'gcc', 'g++', 'c++', 'cc', 'ld', 'ld.gold', 'ld.lld', 'as', 'ar',
+  'ranlib', 'strip', 'pkg-config', 'cmake', 'ninja', 'node-gyp',
+  'python', 'python3', 'pip', 'pip3', 'wheel', 'cargo', 'rustc', 'gem', 'bundle',
+  'rm', 'mkdir', 'mv', 'cp', 'touch',
   'sort', 'uniq', 'head', 'tail', 'cat', 'grep', 'sed', 'awk', 'tr', 'find',
   // routine POSIX utilities used internally by nvm/npm's own shell wrappers —
   // seen in every install regardless of what the package itself does.
@@ -106,6 +109,9 @@ const KNOWN_BENIGN_PATTERNS = [
   /\.npm\/_logs\//,
   /\.npm\/_update-notifier-last-checked$/,
   /\.npm\/_cacache\//,
+  /\.cache\/pip\//,
+  /\.cargo\/(registry|git)\//,
+  /\.node-gyp\//,
 ];
 const fsBefore = parseFsSnapshot(readLines(path.join(logDir, 'fs_before.txt')));
 const fsAfter = parseFsSnapshot(readLines(path.join(logDir, 'fs_after.txt')));

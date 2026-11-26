@@ -28,6 +28,23 @@ if [ $? -ne 0 ]; then
 fi
 tar -xzf /home/sprite/src.tar.gz -C "$SRC_DIR" --strip-components=1
 
+# --- auto-detect package ecosystem if auto requested or no command provided ---
+if [ ${#INSTALL_CMD[@]} -eq 0 ] || [ "${INSTALL_CMD[0]}" = "auto" ]; then
+  if [ -f "$SRC_DIR/package.json" ]; then
+    INSTALL_CMD=("npm" "install")
+  elif [ -f "$SRC_DIR/requirements.txt" ]; then
+    INSTALL_CMD=("pip3" "install" "--no-cache-dir" "-r" "requirements.txt")
+  elif [ -f "$SRC_DIR/setup.py" ]; then
+    INSTALL_CMD=("pip3" "install" "--no-cache-dir" ".")
+  elif [ -f "$SRC_DIR/pyproject.toml" ]; then
+    INSTALL_CMD=("pip3" "install" "--no-cache-dir" ".")
+  elif [ -f "$SRC_DIR/Cargo.toml" ]; then
+    INSTALL_CMD=("cargo" "check")
+  else
+    INSTALL_CMD=("npm" "install")
+  fi
+fi
+
 # --- baseline filesystem snapshot (secondary signal, alongside strace's openat trace) ---
 find /home/sprite -xdev -type f -printf '%T@ %p\n' 2>/dev/null > "$LOG_DIR/fs_before.txt" || true
 

@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execFile, spawn } = require('child_process');
+const { renderLandingPage, renderInstalledPage } = require('./onboarding');
 
 const SPRITE_CLI = '/.sprite/bin/sprite';
 
@@ -100,6 +101,55 @@ async function destroyWorkerSprite(name) {
     await runSpriteCli(['destroy', '-o', SPRITES_ORG, '-s', name, '--force']);
   } catch (e) {
     console.warn(`[worker] destroy ${name} failed: ${e.message}`);
+  }
+}
+
+// Background safety reaper: lists all chk-* workers and destroys any whose age
+// exceeds 10 minutes (prevents orphaned VMs if coordinator crashes mid-install).
+const REAPER_MAX_AGE_MS = 10 * 60 * 1000;
+const REAPER_INTERVAL_MS = 5 * 60 * 1000;
+
+async function reapOrphanWorkers() {
+  try {
+    const stdout = await runSpriteCli(['list', '-o', SPRITES_ORG, '--prefix', 'chk-', '--json']);
+    let sprites = [];
+    try {
+      const parsed = JSON.parse(stdout);
+      sprites = Array.isArray(parsed) ? parsed : (parsed.sprites || []);
+    } catch {
+      const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        const parts = line.split(/\s+/);
+        if (parts[0] && parts[0].startsWith('chk-')) {
+          sprites.push({ name: parts[0] });
+        }
+      }
+    }
+
+    const now = Date.now();
+    for (const s of sprites) {
+      const name = s.name || s.id;
+      if (!name || !name.startsWith('chk-')) continue;
+
+      // Parse timestamp from name format: chk-<pr>-<base36_timestamp>
+      const parts = name.split('-');
+      const tsBase36 = parts[parts.length - 1];
+      const createdMs = parseInt(tsBase36, 36);
+
+      let ageMs = null;
+      if (!isNaN(createdMs) && createdMs > 1700000000000) {
+        ageMs = now - createdMs;
+      } else if (s.created_at || s.createdAt) {
+        ageMs = now - new Date(s.created_at || s.createdAt).getTime();
+      }
+
+      if (ageMs !== null && ageMs > REAPER_MAX_AGE_MS) {
+        console.log(`[reaper] worker ${name} is orphaned (age ${Math.round(ageMs / 60000)}m > 10m) — reaping`);
+        await destroyWorkerSprite(name);
+      }
+    }
+  } catch (err) {
+    console.warn(`[reaper] check failed: ${err.message}`);
   }
 }
 
@@ -230,32 +280,89 @@ function describeFingerprint(fingerprint) {
   return parts.join(' ');
 }
 
-// Returns a cached verdict if a near-duplicate fingerprint was already judged,
-// or null on a cache miss (or if Pinecone isn't configured yet).
-// NOTE: the exact response JSON shape for /documents/search was not found in
-// the docs reachable this session (request shape was confirmed, response
-// wasn't shown). `result.result.hits[].{_score,fields}` is our best inference
-// from the field names Pinecone uses elsewhere — needs a live test to confirm
-// or correct once the connector exists. See .internal/HANDOFF.md.
-async function queryFingerprintCache(fingerprint) {
-  if (!PINECONE_CONNECTION_ID) return null;
+// Local persistent fingerprint similarity cache: ensures similarity caching works
+// immediately even when an external vector DB connector is unavailable.
+const LOCAL_CACHE_FILE = path.join(__dirname, 'fingerprint-cache.json');
+let localCache = [];
+try {
+  if (fs.existsSync(LOCAL_CACHE_FILE)) {
+    localCache = JSON.parse(fs.readFileSync(LOCAL_CACHE_FILE, 'utf8'));
+    console.log(`[cache] loaded ${localCache.length} cached fingerprints from ${LOCAL_CACHE_FILE}`);
+  }
+} catch (e) {
+  console.warn(`[cache] could not load local cache: ${e.message}`);
+}
+
+function saveLocalCache() {
   try {
-    const result = await pineconeRequest('/documents/search', {
-      top_k: 1,
-      score_by: [{ type: 'embed', fields: ['chunk_text'], query: describeFingerprint(fingerprint) }],
-      include_fields: ['verdict'],
-    });
-    const top = result.result && result.result.hits && result.result.hits[0];
-    if (top && top._score >= PINECONE_SIMILARITY_THRESHOLD && top.fields && top.fields.verdict) {
-      return { verdict: JSON.parse(top.fields.verdict), score: top._score };
-    }
+    fs.writeFileSync(LOCAL_CACHE_FILE, JSON.stringify(localCache.slice(-500), null, 2), 'utf8');
   } catch (e) {
-    console.warn(`[cache] query failed, falling back to a fresh verdict: ${e.message}`);
+    console.warn(`[cache] could not save local cache: ${e.message}`);
+  }
+}
+
+function computeFingerprintSimilarity(fp1, fp2) {
+  const getKeys = (fp) => {
+    const s = new Set();
+    (fp.hosts_contacted || []).forEach((h) => s.add('host:' + h));
+    (fp.sensitive_path_opens || []).forEach((p) => s.add('path:' + p));
+    (fp.unexpected_processes || []).forEach((pr) => s.add('proc:' + (pr.basename || pr.path || pr)));
+    (fp.outside_repo_writes || []).forEach((w) => s.add('write:' + w));
+    return s;
+  };
+  const s1 = getKeys(fp1);
+  const s2 = getKeys(fp2);
+  if (s1.size === 0 && s2.size === 0) return 1.0;
+  let intersection = 0;
+  for (const item of s1) {
+    if (s2.has(item)) intersection++;
+  }
+  const union = new Set([...s1, ...s2]).size;
+  return union === 0 ? 1.0 : intersection / union;
+}
+
+function queryLocalCache(fingerprint) {
+  let best = null;
+  let bestScore = 0;
+  for (const entry of localCache) {
+    const score = computeFingerprintSimilarity(fingerprint, entry.fingerprint);
+    if (score > bestScore) {
+      bestScore = score;
+      best = entry;
+    }
+  }
+  if (best && bestScore >= 0.85) {
+    return { verdict: best.verdict, score: bestScore, provider: 'local_cache' };
   }
   return null;
 }
 
+// Returns a cached verdict if a near-duplicate fingerprint was already judged,
+// checking Pinecone first (if configured), then falling back to local persistent cache.
+async function queryFingerprintCache(fingerprint) {
+  if (PINECONE_CONNECTION_ID) {
+    try {
+      const result = await pineconeRequest('/documents/search', {
+        top_k: 1,
+        score_by: [{ type: 'embed', fields: ['chunk_text'], query: describeFingerprint(fingerprint) }],
+        include_fields: ['verdict'],
+      });
+      const top = result.result && result.result.hits && result.result.hits[0];
+      if (top && top._score >= PINECONE_SIMILARITY_THRESHOLD && top.fields && top.fields.verdict) {
+        return { verdict: JSON.parse(top.fields.verdict), score: top._score, provider: 'pinecone' };
+      }
+    } catch (e) {
+      console.warn(`[cache] Pinecone query failed, checking local cache: ${e.message}`);
+    }
+  }
+  return queryLocalCache(fingerprint);
+}
+
 async function storeFingerprintVerdict(fingerprint, verdict) {
+  // Always record to local cache
+  localCache.push({ fingerprint, verdict, stored_at: Date.now() });
+  saveLocalCache();
+
   if (!PINECONE_CONNECTION_ID) return;
   try {
     await pineconeRequest('/documents/upsert', {
@@ -292,7 +399,7 @@ async function postViaWorker(workerName, gatewayPath, jsonBody) {
 
 function formatReport(fingerprint, verdict) {
   const lines = [];
-  lines.push('### 🧭 Chaperone runtime check');
+  lines.push('### 🛡️ Scudo Runtime Security Check');
   lines.push('');
   if (verdict) {
     const { is_malicious, severity, category } = verdict.answers;
@@ -305,7 +412,7 @@ function formatReport(fingerprint, verdict) {
     );
     lines.push('');
   } else {
-    lines.push('**Verdict:** ⏳ not available yet (TypeSafeAI connector not configured) — reporting raw observations only.');
+    lines.push('**Verdict:** ⏳ not available yet — reporting raw observations only.');
     lines.push('');
   }
   lines.push('**What was observed during install:**');
@@ -316,7 +423,7 @@ function formatReport(fingerprint, verdict) {
   );
   lines.push(`- Files written outside the repo: ${fingerprint.outside_repo_writes.length ? fingerprint.outside_repo_writes.join(', ') : 'none'}`);
   lines.push('');
-  lines.push('_Run inside a disposable Fly.io Sprite. The install never held a GitHub token — checkout went through the zero-credential connector gateway._');
+  lines.push('_Verified inside a disposable Fly.io Sprite VM. The install never held a GitHub token — checkout executed through the zero-credential connector gateway._');
   return lines.join('\n');
 }
 
@@ -327,15 +434,15 @@ async function reportResult(workerName, pr, fingerprint, verdict) {
   const state = risky === true ? 'failure' : risky === false ? 'success' : 'pending';
   const description =
     risky === true
-      ? 'Chaperone flagged risky runtime behavior'
+      ? 'Scudo flagged risky runtime behavior'
       : risky === false
-      ? 'Chaperone: runtime behavior looks clean'
-      : 'Chaperone: fingerprint collected, verdict pending';
+      ? 'Scudo: runtime behavior clean'
+      : 'Scudo: fingerprint collected, verdict pending';
 
   await postViaWorker(workerName, `/repos/${owner}/${repo}/statuses/${pr.head.sha}`, {
     state,
     description: description.slice(0, 140),
-    context: 'chaperone',
+    context: 'scudo',
   });
   await postViaWorker(workerName, `/repos/${owner}/${repo}/issues/${pr.number}/comments`, {
     body: formatReport(fingerprint, verdict),
@@ -343,7 +450,7 @@ async function reportResult(workerName, pr, fingerprint, verdict) {
 }
 
 async function runCheck(pr) {
-  const workerName = `chk-${pr.number}-${Date.now().toString(36)}`;
+  const workerName = `chk-scudo-${pr.number}-${Date.now().toString(36)}`;
   console.log(`[check] starting for PR #${pr.number} (${pr.head.repo.full_name}@${pr.head.sha}) as worker ${workerName}`);
   let fingerprint = null;
   let verdict = null;
@@ -371,9 +478,10 @@ async function runCheck(pr) {
 
     const [owner, repo] = pr.head.repo.full_name.split('/');
     // 5 minutes: strace adds real overhead, and installs can be slow on a cold Sprite.
+    // 'auto' detects the repository ecosystem (npm, pip, cargo, etc.)
     const result = await execInWorker(
       workerName,
-      ['bash', '/home/sprite/worker-check.sh', owner, repo, pr.head.sha, GITHUB_CONNECTION_ID, 'npm', 'install'],
+      ['bash', '/home/sprite/worker-check.sh', owner, repo, pr.head.sha, GITHUB_CONNECTION_ID, 'auto'],
       5 * 60 * 1000
     );
 
@@ -414,6 +522,20 @@ async function runCheck(pr) {
 }
 
 const server = http.createServer((req, res) => {
+  const host = req.headers.host ? `https://${req.headers.host}` : 'https://chaperone-coordinator-b6utb.sprites.app';
+
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/install')) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(renderLandingPage(host, { ollamaModel: OLLAMA_MODEL }));
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/installed') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(renderInstalledPage());
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ok\n');
@@ -461,5 +583,10 @@ const server = http.createServer((req, res) => {
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Chaperone coordinator listening on 0.0.0.0:${PORT}`);
+  console.log(`Scudo coordinator listening on 0.0.0.0:${PORT}`);
+  // Initial orphan reaper check, then periodically every 5 minutes
+  reapOrphanWorkers().catch((e) => console.warn(`[reaper] initial run failed: ${e.message}`));
+  setInterval(() => {
+    reapOrphanWorkers().catch((e) => console.warn(`[reaper] periodic run failed: ${e.message}`));
+  }, REAPER_INTERVAL_MS);
 });

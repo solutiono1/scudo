@@ -1,0 +1,23 @@
+{
+  "name": "Scudo Security",
+  "url": "https://chaperone-coordinator-b6utb.sprites.app",
+  "hook_attributes": {
+    "url": "https://chaperone-coordinator-b6utb.sprites.app/webhook",
+    "active": true
+  },
+  "redirect_url": "https://chaperone-coordinator-b6utb.sprites.app/installed",
+  "callback_urls": [
+    "https://chaperone-coordinator-b6utb.sprites.app/callback"
+  ],
+  "public": true,
+  "default_permissions": {
+    "pull_requests": "write",
+    "statuses": "write",
+    "issues": "write",
+    "contents": "read"
+  },
+  "default_events": [
+    "pull_request"
+  ],
+  "description": "Runtime-verified trust for untrusted code. Scudo executes PRs and coding agents in isolated Fly.io Sprites and delivers typed AI safety verdicts."
+}

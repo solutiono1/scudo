@@ -8,8 +8,8 @@
 # ARCHITECTURE.md's Mode B design.
 set -uo pipefail
 
-LOG=/tmp/chaperone_guardian.log
-MARKER=/tmp/chaperone_guardian_pending
+LOG=/tmp/scudo_guardian.log
+MARKER=/tmp/scudo_guardian_pending
 
 INPUT=$(cat)
 
@@ -67,7 +67,7 @@ if [ "$IS_RISKY" = "1" ]; then
   fi
   echo "$CKPT_ID" > "$MARKER"
   echo "{\"command\":$(node -e "console.log(JSON.stringify(process.argv[1]))" "$COMMAND"),\"score\":$SCORE,\"checkpoint\":\"$CKPT_ID\"}" >> "$LOG"
-  echo "⚠️  Chaperone: this command scored $SCORE for destructive risk — checkpointed to $CKPT_ID before allowing it to run." >&2
+  echo "🛡️  Scudo: this command scored $SCORE for destructive risk — checkpointed to $CKPT_ID before allowing it to run." >&2
 fi
 
 exit 0

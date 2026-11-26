@@ -5,8 +5,8 @@
 # the actual "instant rollback" Mode B is built to demonstrate.
 set -uo pipefail
 
-LOG=/tmp/chaperone_guardian.log
-MARKER=/tmp/chaperone_guardian_pending
+LOG=/tmp/scudo_guardian.log
+MARKER=/tmp/scudo_guardian_pending
 
 if [ ! -f "$MARKER" ]; then
   exit 0
@@ -23,6 +23,6 @@ fi
 echo "[$(date -u +%FT%TZ)] restoring to $CKPT_ID" >> "$LOG"
 RESTORE_OUT=$(sprite-env checkpoints restore "$CKPT_ID" 2>&1)
 echo "$RESTORE_OUT" >> "$LOG"
-echo "⏪ Chaperone: that command was flagged risky — restored the Sprite to checkpoint $CKPT_ID, undoing it." >&2
+echo "⏪ Scudo: that command was flagged risky — restored the Sprite to checkpoint $CKPT_ID, undoing it." >&2
 
 exit 0
